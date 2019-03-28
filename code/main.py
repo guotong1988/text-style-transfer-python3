@@ -18,9 +18,9 @@ import beam_search, greedy_decoding
 class Model(object):
 
     def __init__(self, args, vocab):
-        dim_y = args.dim_y
-        dim_z = args.dim_z
-        dim_h = dim_y + dim_z
+        dim_y_textstyle = args.dim_y
+        dim_z_textcontent = args.dim_z
+        dim_h = dim_y_textstyle + dim_z_textcontent
         dim_emb = args.dim_emb
         n_layers = args.n_layers
         max_len = args.max_seq_length
@@ -42,7 +42,7 @@ class Model(object):
             name='batch_len')
         self.batch_size = tf.placeholder(tf.int32,
             name='batch_size')
-        self.enc_inputs = tf.placeholder(tf.int32, [None, None],    #size * len
+        self.enc_inputs = tf.placeholder(tf.int32, [None, None],    # [batch_size, seq_len]
             name='enc_inputs')
         self.dec_inputs = tf.placeholder(tf.int32, [None, None],
             name='dec_inputs')
@@ -51,7 +51,7 @@ class Model(object):
         self.weights = tf.placeholder(tf.float32, [None, None],
             name='weights')
         self.labels = tf.placeholder(tf.float32, [None],
-            name='labels')
+            name='labels') # 0 or 1
 
         labels = tf.reshape(self.labels, [-1, 1])
 
@@ -65,37 +65,42 @@ class Model(object):
         dec_inputs = tf.nn.embedding_lookup(embedding, self.dec_inputs)
 
         #####   auto-encoder   #####
-        init_state = tf.concat([linear(labels, dim_y, scope='encoder'),
-            tf.zeros([self.batch_size, dim_z])], 1)
-        cell_e = create_cell(dim_h, n_layers, self.dropout)
-        _, z = tf.nn.dynamic_rnn(cell_e, enc_inputs,
+        init_state = tf.concat([linear(labels, dim_y_textstyle, scope='encoder'),
+                                tf.zeros([self.batch_size, dim_z_textcontent])], 1)
+        cell_encoder = create_cell(dim_h, n_layers, self.dropout)
+
+        _, z_textcontent = tf.nn.dynamic_rnn(cell_encoder, enc_inputs,
             initial_state=init_state, scope='encoder')
-        z = z[:, dim_y:]
+        z_textcontent = z_textcontent[:, dim_y_textstyle:] # 应该认为一部分dim是内容，另一部分dim是风格
 
         #cell_e = create_cell(dim_z, n_layers, self.dropout)
         #_, z = tf.nn.dynamic_rnn(cell_e, enc_inputs,
         #    dtype=tf.float32, scope='encoder')
 
-        self.h_ori = tf.concat([linear(labels, dim_y,
-            scope='generator'), z], 1)
-        self.h_tsf = tf.concat([linear(1-labels, dim_y,
-            scope='generator', reuse=True), z], 1)
+        self.h_origin = tf.concat([linear(labels, dim_y_textstyle,
+                                          scope='generator'),
+                                   z_textcontent],
+                                   1)
+        self.h_transfer = tf.concat([linear(1 - labels, dim_y_textstyle,
+                                            scope='generator', reuse=True),
+                                     z_textcontent],
+                                     1)
 
-        cell_g = create_cell(dim_h, n_layers, self.dropout)
-        g_outputs, _ = tf.nn.dynamic_rnn(cell_g, dec_inputs,
-            initial_state=self.h_ori, scope='generator')
+        cell_G = create_cell(dim_h, n_layers, self.dropout)
+        G_outputs, _ = tf.nn.dynamic_rnn(cell_G, dec_inputs,
+                                         initial_state=self.h_origin, scope='generator')
 
         # attach h0 in the front
-        teach_h = tf.concat([tf.expand_dims(self.h_ori, 1), g_outputs], 1)
+        teach_h = tf.concat([tf.expand_dims(self.h_origin, 1), G_outputs], 1)
 
-        g_outputs = tf.nn.dropout(g_outputs, self.dropout)
-        g_outputs = tf.reshape(g_outputs, [-1, dim_h])
-        g_logits = tf.matmul(g_outputs, proj_W) + proj_b
+        G_outputs = tf.nn.dropout(G_outputs, self.dropout)
+        G_outputs = tf.reshape(G_outputs, [-1, dim_h])
+        G_logits = tf.matmul(G_outputs, proj_W) + proj_b
 
         loss_rec = tf.nn.sparse_softmax_cross_entropy_with_logits(
-            labels=tf.reshape(self.targets, [-1]), logits=g_logits)
+            labels=tf.reshape(self.targets, [-1]), logits=G_logits)
         loss_rec *= tf.reshape(self.weights, [-1])
-        self.loss_rec = tf.reduce_sum(loss_rec) / tf.to_float(self.batch_size)
+        self.loss_reconstruction = tf.reduce_sum(loss_rec) / tf.to_float(self.batch_size) # 因为 encoder_input decoder_input target 三者几乎一样
 
         #####   feed-previous decoding   #####
         go = dec_inputs[:,0,:]
@@ -103,33 +108,47 @@ class Model(object):
             self.gamma)
         hard_func = argmax_word(self.dropout, proj_W, proj_b, embedding)
 
-        soft_h_ori, soft_logits_ori = rnn_decode(self.h_ori, go, max_len,
-            cell_g, soft_func, scope='generator')
-        soft_h_tsf, soft_logits_tsf = rnn_decode(self.h_tsf, go, max_len,
-            cell_g, soft_func, scope='generator')
+        soft_h_origin, soft_logits_origin = rnn_decode(self.h_origin, go, max_len,
+                                                 cell_G, soft_func, scope='generator')
+        soft_h_transfer, soft_logits_transfer = rnn_decode(self.h_transfer, go, max_len,
+                                                 cell_G, soft_func, scope='generator')
 
-        hard_h_ori, self.hard_logits_ori = rnn_decode(self.h_ori, go, max_len,
-            cell_g, hard_func, scope='generator')
-        hard_h_tsf, self.hard_logits_tsf = rnn_decode(self.h_tsf, go, max_len,
-            cell_g, hard_func, scope='generator')
+        hard_h_origin, self.hard_logits_origin = rnn_decode(self.h_origin, go, max_len,
+                                                            cell_G, hard_func, scope='generator')
+        hard_h_transfer, self.hard_logits_transfer = rnn_decode(self.h_transfer, go, max_len,
+                                                                cell_G, hard_func, scope='generator')
 
         #####   discriminator   #####
-        # a batch's first half consists of sentences of one style,
-        # and second half of the other
+        # a batch's first half consists of sentences of one style, and second half of the other
+        # batch_size==128，0-64一种风格，64-128另一种风格
         half = tf.cast(self.batch_size / 2,tf.int32)
         zeros, ones = self.labels[:half], self.labels[half:]
-        soft_h_tsf = soft_h_tsf[:, :1+self.batch_len, :]
+        soft_h_transfer = soft_h_transfer[:, :1+self.batch_len, :]
 
-        self.loss_d0, loss_g0 = discriminator(teach_h[:half], soft_h_tsf[half:],
-            ones, zeros, filter_sizes, n_filters, self.dropout,
-            scope='discriminator0')
-        self.loss_d1, loss_g1 = discriminator(teach_h[half:], soft_h_tsf[:half],
-            ones, zeros, filter_sizes, n_filters, self.dropout,
-            scope='discriminator1')
+        self.loss_d0, loss_g0 = discriminator(x_real = teach_h[:half], # 貌似是为了让两种风格不可区分
+                                              x_fake = soft_h_transfer[half:], # 貌似是为了让两种风格不可区分
+                                              ones = ones,
+                                              zeros = zeros,
+                                              filter_sizes = filter_sizes,
+                                              n_filters = n_filters,
+                                              dropout = self.dropout,
+                                              scope='discriminator0')
+
+        self.loss_d1, loss_g1 = discriminator(x_real = teach_h[half:], # 貌似是为了让两种风格不可区分
+                                              x_fake = soft_h_transfer[:half], # 貌似是为了让两种风格不可区分
+                                              ones = ones,
+                                              zeros = zeros,
+                                              filter_sizes = filter_sizes,
+                                              n_filters = n_filters,
+                                              dropout = self.dropout,
+                                              scope='discriminator1')
 
         #####   optimizer   #####
-        self.loss_adv = loss_g0 + loss_g1
-        self.loss = self.loss_rec + self.rho * self.loss_adv
+        self.loss_adversarial = loss_g0 + loss_g1
+
+        # 使仅通过文本内容（去掉文本风格）来重新生成这句话的能力越高，也就更多使 内容和风格 分离
+        # 同时让G产生的风格一者接近另一者
+        self.loss = self.loss_reconstruction + self.rho * self.loss_adversarial
 
         theta_eg = retrive_var(['encoder', 'generator',
             'embedding', 'projection'])
@@ -138,8 +157,8 @@ class Model(object):
 
         opt = tf.train.AdamOptimizer(self.learning_rate, beta1, beta2)
 
-        grad_rec, _ = zip(*opt.compute_gradients(self.loss_rec, theta_eg))
-        grad_adv, _ = zip(*opt.compute_gradients(self.loss_adv, theta_eg))
+        grad_rec, _ = zip(*opt.compute_gradients(self.loss_reconstruction, theta_eg))
+        grad_adv, _ = zip(*opt.compute_gradients(self.loss_adversarial, theta_eg))
         grad, _ = zip(*opt.compute_gradients(self.loss, theta_eg))
         grad, _ = tf.clip_by_global_norm(grad, grad_clip)
 
@@ -148,7 +167,7 @@ class Model(object):
         self.grad_norm = tf.global_norm(grad)
 
         self.optimize_tot = opt.apply_gradients(zip(grad, theta_eg))
-        self.optimize_rec = opt.minimize(self.loss_rec, var_list=theta_eg)
+        self.optimize_rec = opt.minimize(self.loss_reconstruction, var_list=theta_eg)
         self.optimize_d0 = opt.minimize(self.loss_d0, var_list=theta_d0)
         self.optimize_d1 = opt.minimize(self.loss_d1, var_list=theta_d1)
 
@@ -271,8 +290,8 @@ if __name__ == '__main__':
                         optimize = model.optimize_rec
 
                     loss, loss_rec, loss_adv, _ = sess.run([model.loss,
-                        model.loss_rec, model.loss_adv, optimize],
-                        feed_dict=feed_dict)
+                                                            model.loss_reconstruction, model.loss_adversarial, optimize],
+                                                           feed_dict=feed_dict)
                     losses.add([loss, loss_rec, loss_adv, loss_d0, loss_d1])
 
                     #grad_rec, grad_adv, grad = sess.run([model.grad_rec_norm,

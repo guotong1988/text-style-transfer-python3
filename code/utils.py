@@ -56,9 +56,9 @@ def get_batch(x, y, word2id, noisy=False, min_len=5):
         l = len(sent)
         padding = [pad] * (max_len - l)
         _sent_id = noise(sent_id, unk) if noisy else sent_id
-        rev_x.append(padding + _sent_id[::-1])
-        go_x.append([go] + sent_id + padding)
-        x_eos.append(sent_id + [eos] + padding)
+        rev_x.append(padding + _sent_id[::-1]) # 如果没有noise，那三个输入几乎就是一个
+        go_x.append([go] + sent_id + padding) # 如果没有noise，那三个输入几乎就是一个
+        x_eos.append(sent_id + [eos] + padding) # 如果没有noise，那三个输入几乎就是一个
         weights.append([1.0] * (l+1) + [0.0] * (max_len-l))
 
     return {'enc_inputs': rev_x,
@@ -88,8 +88,10 @@ def get_batches(x0, x1, word2id, batch_size, noisy=False):
     s = 0
     while s < n:
         t = min(s + batch_size, n)
-        batches.append(get_batch(x0[s:t] + x1[s:t],
-            [0]*(t-s) + [1]*(t-s), word2id, noisy))
+        batches.append(get_batch(x = x0[s:t] + x1[s:t], # 前半个batch是一种风格，后半个batch是另一种风格
+                                 y = [0]*(t-s) + [1]*(t-s),
+                                 word2id = word2id,
+                                 noisy = noisy))
         s = t
 
     return batches, order0, order1

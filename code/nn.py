@@ -140,8 +140,8 @@ def cnn(inp, filter_sizes, n_filters, dropout, scope, reuse=False):
 
     return logits
 
-def discriminator(x_real, x_fake, ones, zeros,
-    filter_sizes, n_filters, dropout, scope,
+def discriminator(x_real=None, x_fake=None, ones=None, zeros=None,
+    filter_sizes=[1,2,3,4,5], n_filters=128, dropout=None, scope=None,
     wgan=False, eta=10):
     d_real = cnn(x_real, filter_sizes, n_filters, dropout, scope)
     d_fake = cnn(x_fake, filter_sizes, n_filters, dropout, scope, reuse=True)
