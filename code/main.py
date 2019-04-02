@@ -189,7 +189,7 @@ def transfer(model, decoder, sess, args, vocab, data0, data1, out_path):
         data1_tsf += tsf[half:]
 
         loss, loss_rec, loss_adv, loss_d0, loss_d1 = sess.run([model.loss,
-            model.loss_rec, model.loss_adv, model.loss_d0, model.loss_d1],
+            model.loss_reconstruction, model.loss_adversarial, model.loss_d0, model.loss_d1],
             feed_dict=feed_dictionary(model, batch, args.rho, args.gamma_min))
         losses.add([loss, loss_rec, loss_adv, loss_d0, loss_d1])
 
