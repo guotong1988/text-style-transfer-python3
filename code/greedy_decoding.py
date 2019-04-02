@@ -9,7 +9,7 @@ class Decoder(object):
     def rewrite(self, batch):
         model = self.model
         logits_ori, logits_tsf = self.sess.run(
-            [model.hard_logits_ori, model.hard_logits_tsf],
+            [model.hard_logits_origin, model.hard_logits_transfer],
             feed_dict={model.dropout: 1,
                        model.batch_size: batch['size'],
                        model.enc_inputs: batch['enc_inputs'],
